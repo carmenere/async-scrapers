@@ -1,58 +1,83 @@
-import asyncio
 import aiohttp
-import requests
-import targets
-import concurrent.futures
+import asyncio
+from targets import targets
+import datetime
+import uvloop
+import aiodns
+from aiohttp import client_exceptions
 
-sites = []
+import os, errno
 
-async def fetch1(url):
-#async def fetch1(url, executor):
-    s = requests.Session()
-    print('start load {}'.format(url))
-    #return s.get(url)
-    #return await loop.run_in_executor(executor, s.get, url)
-    return await loop.run_in_executor(None, s.get, url)
-    #sites.append(yield from loop.run_in_executor(None, s.get, url))
+sites_dir = 'sites-by-python-scrapper'
+
+try:
+    os.makedirs(sites_dir)
+except OSError as e:
+    if e.errno != errno.EEXIST:
+        raise
+
+async def fetch(session, domain, start):
+    uri = 'http://{}/'.format(domain)
+    print('--> uri {} started...'.format(uri))
+    r=None
+    try:
+        async with session.get(uri, allow_redirects=True) as response:
+            if response.status != 200:
+                response.raise_for_status()
+            try:
+                r = await response.text()
+            except Exception as e:
+                print('[ERROR] {} for {}.'.format(e.__class__.__name__, uri))
+            stop = datetime.datetime.now()
+            print('<-- uri {} completed in {}s.'.format(uri, stop-start))
+            try:
+                fd = open('{}/{}'.format(sites_dir, domain), 'w')
+                fd.write(str(r))#, encoding='UTF-8')
+                fd.close()
+            except Exception as e:
+                print('[FILE WRITING ERROR] {}.'.format(e.__class__.__name__))
+            return r
+    except client_exceptions.ClientConnectionError as e:
+        print('[ERROR] {} for {}.'.format(e.__class__.__name__, uri))
+        print('DETAILS: \n', e)
+    except Exception as e:
+        print('[ERROR] {} for {}.'.format(e.__class__.__name__, uri))
 
 
-import time
+async def fetch_all(session, uris, loop):
+    #resolver = aiodns.DNSResolver(loop=loop)
+    try:
+        #results = await asyncio.wait([fetch(session, uri) for uri in uris])
+        results = await asyncio.gather(*[fetch(session, uri, start) for uri in uris])
+    except Exception as e:
+        print('[ERROR] {}.'.format(e.__class__.__name__))
+    return results
 
-async def fetch2(url):
-    response = await aiohttp.request('GET', url)
-    return await response.text()
 
-def fn(future):
-    print('Task {} complited.'.format(future.id))
-    sites.append(future.result())
-
-def async_main():
-    #executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+async def main(N=500):    
+    uris = targets[0:N]
     loop = asyncio.get_event_loop()
-    futures_list = []
-    for uri in targets.targets[0:11]:
-        #future = asyncio.ensure_future(fetch1(uri, executor))
-        future = asyncio.ensure_future(fetch1(uri))
-        futures_list.append(future)
-        future.id = [id(future), uri]
-        future.add_done_callback(fn)
-    print(futures_list)
-    #loop.run_until_complete(asyncio.gather(tuple(futures_list[0:10])))
-    loop.run_until_complete(asyncio.wait(futures_list[0:10]))
-    #time.sleep(10)
-    #loop.stop()
-    #loop.close()
-
-
-def main(targets):
-    for uri in targets:
-        print (uri)
+    
+    timeout = aiohttp.ClientTimeout(total=300, connect=None,
+                      sock_connect=60, sock_read=None)
+    conn = aiohttp.TCPConnector(verify_ssl=False, limit=250)
+    #resolver = aiohttp.AsyncResolver(nameservers=["127.0.0.11"])
+    try:
+        #async with aiohttp.ClientSession(timeout=timeout, resolver=resolver, connector=conn, loop=loop) as session:
+        async with aiohttp.ClientSession(timeout=timeout, connector=conn, loop=loop) as session:
+        #async with aiohttp.ClientSession(timeout=timeout, loop=loop) as session:
+            try:
+                htmls = await fetch_all(session, uris, loop)
+            except Exception as e:
+                print('[ERROR] {}.'.format(e.__class__.__name__))
+            #print(htmls)
+    except Exception as e:
+        print('[ERROR] {}.'.format(e.__class__.__name__))
 
 
 
 if __name__ == '__main__':
-    loop = asyncio.get_event_loop()
-    async_main()
-    for site in sites:
-        print(site)
-
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    #asyncio.run_until_complete(main(1000))
+    start = datetime.datetime.now()
+    asyncio.run(main(1000))
